@@ -35,6 +35,138 @@ pip install pandas numpy geopandas shapely h3 rasterio rasterstats \
 
 Run notebooks in order. Each produces outputs consumed by later steps.
 
+### High-Level Flow Diagram
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        GeoOptim Pipeline — Overview                         │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+  ┌──────────────┐
+  │  Notebook 0  │   DATA ACQUISITION
+  │  Download    │   ─────────────────
+  │              │   Fetches raw geospatial data from Overture Maps API
+  │              │   (places, roads, buildings, land use, water) and
+  │              │   downloads Copernicus GLO-30 DEM elevation tile.
+  │              │   Crops all layers to Kathmandu bbox.
+  └──────┬───────┘
+         │
+         ▼
+  ┌──────────────┐
+  │  Notebook 1  │   EXPLORATORY DATA ANALYSIS
+  │  EDA Only    │   ─────────────────────────
+  │              │   Inspects raw/processed layers. Plots distributions
+  │              │   of POI categories, road classes, elevation, and
+  │              │   population density. No outputs consumed downstream.
+  └──────┬───────┘
+         │
+         ▼
+  ┌──────────────┐
+  │  Notebook 2  │   DATA CLEANING
+  │  Clean       │   ─────────────
+  │              │   • Drops NAs, keeps minimal columns
+  │              │   • Maps 206 Overture categories → 18 super classes
+  │              │   • Groups road classes into 3 functional groups
+  │              │   • Clips WorldPop raster to study area
+  └──────┬───────┘
+         │
+         ▼
+  ┌──────────────┐
+  │  Notebook 3  │   FEATURE ENGINEERING
+  │  Engineer    │   ──────────────────
+  │              │   • Converts POIs → H3 hexagons (res 10)
+  │              │   • Computes multi-scale buffer POI counts (500m, 1km, 2km)
+  │              │   • Calculates road distances + densities per hexagon
+  │              │   • Extracts population counts from raster
+  │              │   • Computes building footprint statistics
+  │              │   • Extracts DEM elevation + slope per hexagon
+  │              │   • Builds training dataset + full inference grid
+  └──────┬───────┘
+         │
+         ▼
+  ┌──────────────┐
+  │  Notebook 4  │   MODEL TRAINING
+  │  Train       │   ──────────────
+  │              │   Trains 4 multi-label classifiers:
+  │              │   • Random Forest  (native multi-label)
+  │              │   • LightGBM       (MultiOutputClassifier)
+  │              │   • MLP Neural Net (native multi-label)
+  │              │   • XGBoost        (MultiOutputClassifier)
+  │              │   Optimizes per-class thresholds via PR curve F1.
+  │              │   Serializes models + scaler + thresholds to .pkl
+  └──────┬───────┘
+         │
+         ▼
+  ┌──────────────┐
+  │  Notebook 5  │   GRID SEARCH (placeholder — empty, skip)
+  │  Skip        │
+  └──────┬───────┘
+         │
+         ▼
+  ┌──────────────┐
+  │  Notebook 6  │   INFERENCE
+  │  Predict     │   ──────────
+  │              │   Loads trained MLP model + RobustScaler.
+  │              │   Runs predict_proba on full inference grid
+  │              │   (~33,000 hexagons across Kathmandu).
+  │              │   Appends 6 probability columns per hexagon.
+  │              │   Output: hexagon_ktm_predictions.geojson
+  └──────┬───────┘
+         │
+         ▼
+  ┌──────────────────────────────────────────────────────────┐
+  │              FINAL OUTPUT: hexagon_ktm_predictions.geojson│
+  │   Every hexagon in Kathmandu with predicted probability   │
+  │   for each of 6 POI categories (Restaurant, Hotel,       │
+  │   Cafe, Mall, Fashion, Convenience).                      │
+  └──────────────────────────────────────────────────────────┘
+
+
+  ┌─────────────────────────────────────────────────────────────────────────────┐
+  │                         DATA FLOW DETAIL                                    │
+  └─────────────────────────────────────────────────────────────────────────────┘
+
+  Overture Maps API ──────────┐
+  Copernicus DEM tile ────────┤
+  WorldPop 100m raster ───────┤
+                              ▼
+                    ┌─────────────────┐
+                    │  Notebook 0     │  Raw GeoJSONs + elevation TIFF
+                    └────────┬────────┘
+                             ▼
+                    ┌─────────────────┐
+                    │  Notebook 2     │  light_data.geojson
+                    │                 │  super_class_data.geojson
+                    │                 │  light_roads.geojson
+                    │                 │  functional_roads.geojson
+                    │                 │  kathmandu_population_density.tif
+                    └────────┬────────┘
+                             ▼
+                    ┌─────────────────┐
+                    │  Notebook 3     │  hexagon_ktm.geojson (inference grid)
+                    │                 │  kathmandu_multilabel_dataset_final.geojson
+                    └────────┬────────┘
+                             ▼
+                    ┌─────────────────┐
+                    │  Notebook 4     │  Output/Models/*.pkl
+                    │                 │  Output/Models/robust_scaler.pkl
+                    │                 │  Output/Models/*_thresholds.pkl
+                    └────────┬────────┘
+                             ▼
+                    ┌─────────────────┐
+                    │  Notebook 6     │  hexagon_ktm_predictions.geojson
+                    └─────────────────┘
+```
+
+### Pipeline Summary
+
+| Step | What Happens | Key Transformation |
+|------|-------------|-------------------|
+| **0 → 2** | Raw data → Clean data | 206 POI categories collapsed to 18 super classes; roads grouped into 3 functional types; raster clipped |
+| **2 → 3** | Tabular → Spatial features | Points/polygons rasterized into ~68 features per H3 hexagon at 3 spatial scales |
+| **3 → 4** | Features → Trained models | 80/20 split, RobustScaler, 4 classifiers trained with threshold optimization |
+| **4 → 6** | Models → Predictions | MLP model applied to 33,000+ hexagons to produce probability maps |
+
 | # | Notebook | What it does | Produces |
 |---|----------|-------------|----------|
 | 0 | `0_Data_download.ipynb` | Downloads Overture Maps places, roads, buildings, land use, water; crops Copernicus DEM tile to Kathmandu bbox | Raw GeoJSONs + elevation TIFF |
