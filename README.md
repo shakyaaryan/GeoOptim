@@ -14,13 +14,23 @@ Code/
   3_Data_engineering.ipynb   # Feature engineering, H3 binning, inference grid
   4_Train_Models.ipynb       # Train RF, LightGBM, MLP, XGBoost classifiers
   5_gridsearch.ipynb         # Empty placeholder
-  6_Inference.ipynb          # Run MLP model on full prediction grid
+  6_Inference.ipynb          # Run MLP/RF models on full prediction grid
 Docs/
   super_class.csv            # 206 Overture categories mapped to 18 super classes
   GeoOptima_Proposal.pdf
   Proposal.docx
 Output/
-  Models/                    # Serialized .pkl model files + scaler + thresholds
+  Models/
+    *.pkl                    # Serialized model files (RF, LightGBM, MLP, XGBoost)
+    robust_scaler.pkl        # Global RobustScaler for inference
+    *_thresholds.pkl         # Per-class optimal thresholds
+    MultiLabel_DATA/
+      robust_scaler.pkl      # Scaler fitted on MultiLabel_DATA training set
+    MultiLabel_DATA_V2/
+      robust_scaler.pkl      # Scaler fitted on MultiLabel_DATA_V2 training set
+  Plots/
+    mlp_output.geojson       # MLP inference output with probability columns
+    rf_prediction.geojson    # RF inference output with probability columns
 Data/                        # Gitignored — run notebook 0 to populate
 ```
 
@@ -30,6 +40,8 @@ Data/                        # Gitignored — run notebook 0 to populate
 pip install pandas numpy geopandas shapely h3 rasterio rasterstats \
   scikit-learn xgboost lightgbm overturemaps joblib matplotlib seaborn
 ```
+
+No `requirements.txt` exists — install dependencies manually.
 
 ## Pipeline
 
@@ -106,20 +118,19 @@ Run notebooks in order. Each produces outputs consumed by later steps.
   ┌──────────────┐
   │  Notebook 6  │   INFERENCE
   │  Predict     │   ──────────
-  │              │   Loads trained MLP model + RobustScaler.
+  │              │   Loads trained model(s) + RobustScaler.
   │              │   Runs predict_proba on full inference grid
   │              │   (~33,000 hexagons across Kathmandu).
-  │              │   Appends 6 probability columns per hexagon.
-  │              │   Output: hexagon_ktm_predictions.geojson
+  │              │   Outputs probability GeoJSON for MLP and RF.
   └──────┬───────┘
          │
          ▼
-  ┌──────────────────────────────────────────────────────────┐
-  │              FINAL OUTPUT: hexagon_ktm_predictions.geojson│
-  │   Every hexagon in Kathmandu with predicted probability   │
-  │   for each of 6 POI categories (Restaurant, Hotel,       │
-  │   Cafe, Mall, Fashion, Convenience).                      │
-  └──────────────────────────────────────────────────────────┘
+  ┌──────────────────────────────────────────────────────────────────────────┐
+  │              FINAL OUTPUTS                                              │
+  │   • mlp_output.geojson  — Hexagons with MLP-predicted probabilities     │
+  │   • rf_prediction.geojson — Hexagons with RF-predicted probabilities    │
+  │   Each hexagon carries 6 probability fields for the POI categories.     │
+  └──────────────────────────────────────────────────────────────────────────┘
 
 
   ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -151,10 +162,13 @@ Run notebooks in order. Each produces outputs consumed by later steps.
                     │  Notebook 4     │  Output/Models/*.pkl
                     │                 │  Output/Models/robust_scaler.pkl
                     │                 │  Output/Models/*_thresholds.pkl
+                    │                 │  Output/Models/MultiLabel_DATA/robust_scaler.pkl
+                    │                 │  Output/Models/MultiLabel_DATA_V2/robust_scaler.pkl
                     └────────┬────────┘
                              ▼
                     ┌─────────────────┐
-                    │  Notebook 6     │  hexagon_ktm_predictions.geojson
+                    │  Notebook 6     │  Output/Plots/mlp_output.geojson
+                    │                 │  Output/Plots/rf_prediction.geojson
                     └─────────────────┘
 ```
 
@@ -165,7 +179,7 @@ Run notebooks in order. Each produces outputs consumed by later steps.
 | **0 → 2** | Raw data → Clean data | 206 POI categories collapsed to 18 super classes; roads grouped into 3 functional types; raster clipped |
 | **2 → 3** | Tabular → Spatial features | Points/polygons rasterized into ~68 features per H3 hexagon at 3 spatial scales |
 | **3 → 4** | Features → Trained models | 80/20 split, RobustScaler, 4 classifiers trained with threshold optimization |
-| **4 → 6** | Models → Predictions | MLP model applied to 33,000+ hexagons to produce probability maps |
+| **4 → 6** | Models → Predictions | MLP and RF models applied to 33,000+ hexagons to produce probability maps |
 
 | # | Notebook | What it does | Produces |
 |---|----------|-------------|----------|
@@ -173,9 +187,9 @@ Run notebooks in order. Each produces outputs consumed by later steps.
 | 1 | `1_Data.ipynb` | EDA only — inspects raw/processed layers, plots distributions | No pipeline outputs |
 | 2 | `2_data_cleaning.ipynb` | Drops NAs, keeps minimal columns, maps 206 POI categories to 18 super classes, groups road classes into 3 functional groups, clips WorldPop raster to bbox | `light_data.geojson`, `super_class_data.geojson`, `light_roads.geojson`, `functional_roads.geojson`, `kathmandu_population_density.tif` |
 | 3 | `3_Data_engineering.ipynb` | Converts POIs to H3 hexagons (res 10), computes multi-scale buffer POI counts, road distances/densities, population counts, building stats, DEM elevation/slope; builds training + background grids | `hexagon_ktm.geojson`, `kathmandu_multilabel_dataset_final.geojson` |
-| 4 | `4_Train_Models.ipynb` | Trains 4 multi-label classifiers with threshold optimization | `Output/Models/*.pkl` |
+| 4 | `4_Train_Models.ipynb` | Trains 4 multi-label classifiers with threshold optimization using modular `train_model()` function; generates confusion matrices and per-class metrics | `Output/Models/*.pkl`, `Output/Models/MultiLabel_DATA/robust_scaler.pkl`, `Output/Models/MultiLabel_DATA_V2/robust_scaler.pkl` |
 | 5 | `5_gridsearch.ipynb` | Empty — skip | — |
-| 6 | `6_Inference.ipynb` | Loads trained MLP model, runs predict_proba on full inference grid | `hexagon_ktm_predictions.geojson` |
+| 6 | `6_Inference.ipynb` | Loads trained MLP and RF models via modular `infer()` function; runs predict_proba on full inference grid | `Output/Plots/mlp_output.geojson`, `Output/Plots/rf_prediction.geojson` |
 
 **Critical path**: 0 → 2 → 3 → 4 → 6. Notebook 1 and 5 are not required.
 
@@ -257,11 +271,33 @@ impacts precision/recall tradeoffs for that class across all models.
 All models use `RobustScaler` on features. Train/test split is 80/20 (`random_state=42`).
 Thresholds are optimized per-class by maximizing F1 on the precision-recall curve.
 
+### Model Configuration Dictionary
+
+The training notebook (`4_Train_Models.ipynb`) centralizes all model hyperparameters
+in a single `MODEL` dictionary. Each entry maps a model name to its configured
+estimator instance:
+
+```python
+MODEL = {
+    "Random Forest": RandomForestClassifier(...),
+    "LightGBM": LGBMClassifier(...),
+    "MLPClassifier": MLPClassifier(...),
+    "XGBoost": XGBClassifier(...)
+}
+```
+
+This dictionary is passed to the `train_model()` function, which iterates over all
+entries, applies `MultiOutputClassifier` wrapping where needed (LightGBM, XGBoost),
+trains each model, runs threshold optimization, and generates evaluation plots.
+
 ### Random Forest
 ```
 n_estimators=300, class_weight='balanced', max_depth=20, min_samples_split=10
 ```
 Trains natively on the multi-label y matrix (sklearn RF supports this directly).
+The `class_weight='balanced'` parameter automatically adjusts weights inversely
+proportional to class frequencies, which is critical for the severely underrepresented
+Malls_Department class (8.6% prevalence).
 
 ### LightGBM
 ```
@@ -269,13 +305,16 @@ n_estimators=500, learning_rate=0.03, max_depth=8, num_leaves=31,
 class_weight='balanced', subsample=0.8, colsample_bytree=0.8
 ```
 Wrapped in `MultiOutputClassifier` (one independent LGBM per label).
+`subsample=0.8` and `colsample_bytree=0.8` prevent overfitting to spatial
+autocorrelation patterns. `verbose=-1` silences internal training logs.
 
 ### XGBoost
 ```
 n_estimators=500, max_depth=8, learning_rate=0.03, subsample=0.8,
-colsample_bytree=0.8, objective='binary:logistic'
+colsample_bytree=0.8, objective='binary:logistic', eval_metric='logloss'
 ```
 Wrapped in `MultiOutputClassifier` (one independent XGB per label).
+Uses `binary:logistic` objective with `logloss` evaluation metric.
 
 ### MLP (Neural Network)
 ```
@@ -283,7 +322,51 @@ hidden_layer_sizes=(128, 64, 32), activation='relu', solver='adam',
 alpha=0.03, batch_size=64, learning_rate_init=0.005, max_iter=150,
 early_stopping=True, validation_fraction=0.1, n_iter_no_change=10
 ```
-Trains natively on multi-label y matrix. This is the model used for inference.
+Trains natively on multi-label y matrix. The three-layer bottleneck architecture
+(128 → 64 → 32) extracts hierarchical spatial patterns. `alpha=0.03` provides L2
+regularization to counter overfitting on the ~68-feature input space.
+`early_stopping=True` with `n_iter_no_change=10` halts training when validation
+loss stagnates, preventing unnecessary epochs.
+
+## Training Notebook Architecture
+
+The training notebook (`4_Train_Models.ipynb`) has been refactored into three
+modular functions for reproducibility and clarity:
+
+### `prepare_data(DATA_DIR)`
+
+Loads the GeoJSON dataset, splits features from labels, performs an 80/20 train/test
+split, fits a `RobustScaler` on the training set, transforms both sets, and saves
+the scaler to a subdirectory under `Output/Models/` named after the input dataset.
+Returns `(X_train_scaled, X_test_scaled, y_train, y_test, clean_label_names)`.
+
+The scaler is saved to a path derived from the dataset filename:
+```
+Output/Models/MultiLabel_DATA/robust_scaler.pkl     (for MultiLabel_DATA.geojson)
+Output/Models/MultiLabel_DATA_V2/robust_scaler.pkl  (for MultiLabel_DATA_V2.geojson)
+```
+
+### `train_model(DATA_DIR, MODEL)`
+
+Orchestrates the full training loop: calls `prepare_data()`, iterates over each
+model in the `MODEL` dictionary, wraps LightGBM and XGBoost in
+`MultiOutputClassifier`, calls `model.fit()`, runs `threshold_optimization()`, and
+calls `plot_metrics()` for each model.
+
+### `threshold_optimization(model, X_test, mname, y_test, columns)`
+
+For each of the 6 target classes, extracts probability predictions from the model,
+sweeps across all possible thresholds on the precision-recall curve, and selects the
+threshold that maximizes the F1 score. Handles both native multi-label models
+(MLP, RF — which return a single `(n_samples, n_classes)` probability matrix) and
+wrapped models (LightGBM, XGBoost — which return a list of `(n_samples, 2)` arrays
+that must be column-stacked). Returns `(best_thresholds, y_pred_optimal)`.
+
+### `plot_metrics(y_true, y_pred, classes, mname)`
+
+Prints global metrics (subset accuracy, macro F1, hamming loss) and a per-class
+metrics table (accuracy, F1, precision, recall). Generates a 2×3 grid of confusion
+matrices — one per target class — with normalized percentages overlaid on raw counts.
 
 ## Model Performance (Validation Set)
 
@@ -303,6 +386,17 @@ Trains natively on multi-label y matrix. This is the model used for inference.
 | Fashion_Clothing | 0.529 | 0.510 | **0.518** | 0.514 |
 | Convenience_Specialty | 0.406 | 0.391 | 0.402 | **0.402** |
 | Malls_Department | **0.276** | 0.229 | 0.224 | 0.242 |
+
+### Optimal Thresholds (from latest training run on MultiLabel_DATA_V2)
+
+| Class | Threshold |
+|-------|-----------|
+| Restaurant | 0.254 |
+| Hotel_Lodging | 0.317 |
+| Malls_Department | 0.355 |
+| Cafe_Bakery | 0.375 |
+| Fashion_Clothing | 0.387 |
+| Convenience_Specialty | 0.340 |
 
 ### Why the Models Perform This Way
 
@@ -349,12 +443,110 @@ RF and MLP is marginal (0.505 vs 0.493 macro F1), and the MLP's balanced per-cla
 behavior (better Cafe_Bakery F1 than RF) may generalize better to unseen prediction
 hexagons than RF's potentially overfitted trees.
 
-## Inference
+## Inference Notebook Architecture
 
-Notebook 6 loads the trained MLP model and RobustScaler, runs `predict_proba` on the
-full inference grid (`hexagon_ktm.geojson` — all 33,000+ hexagons in the bounding box,
-both training and background), and appends 6 probability columns. Output:
-`hexagon_ktm_predictions.geojson`.
+The inference notebook (`6_Inference.ipynb`) has been refactored into a modular
+`infer()` function and supports running predictions from any trained model, not just
+the MLP.
+
+### Modular `infer()` Function
+
+```python
+def infer(model_path, scaler_path, data_path, output_path, single=False):
+```
+
+**Parameters:**
+- `model_path` — relative path (under `BASE_DIR`) to the serialized `.pkl` model
+- `scaler_path` — relative path to the `robust_scaler.pkl` used during training
+- `data_path` — absolute path to the inference GeoJSON grid
+- `output_path` — relative output path for the prediction GeoJSON
+- `single` — if `True`, the model returns a list of per-class `(n_samples, 2)` arrays
+  (e.g., from `MultiOutputClassifier`-wrapped RF) that must be column-stacked into a
+  single `(n_samples, n_classes)` matrix. Set to `False` for native multi-label models
+  like MLP that already return the 2D matrix directly.
+
+**What it does:**
+1. Loads the trained model and RobustScaler from disk via `joblib.load()`
+2. Reads the inference grid GeoJSON (~33,000 hexagons)
+3. Extracts feature columns (everything except `h3_id`, `geometry`, and any existing
+   `prob_*` columns)
+4. Validates feature count against `scaler.n_features_in_` — raises `ValueError` on
+   mismatch
+5. Scales features with the loaded RobustScaler
+6. Calls `model.predict_proba()` to get class probabilities
+7. Appends 6 `prob_*` columns to the GeoDataFrame
+8. Saves the output as a GeoJSON file
+
+### Running MLP Inference
+
+The default inference call uses the MLP model:
+
+```python
+# Loads from Output/Models/mlp_multilabel_model.pkl
+# Input: hexagon_ktm_V2.geojson
+# Output: Output/Plots/mlp_output.geojson
+```
+
+The MLP's `predict_proba` returns a native `(n_samples, 6)` matrix, so `single=False`.
+
+### Running RF Inference
+
+A second inference run uses the Random Forest model:
+
+```python
+infer(
+    model_path="Models/rf_multilabel_model.pkl",
+    scaler_path="Models/robust_scaler.pkl",
+    data_path="...hexagon_ktm_V2.geojson",
+    output_path="Plots/rf_prediction.geojson",
+    single=True   # RF returns list of (n_samples, 2) arrays
+)
+```
+
+The `single=True` flag tells the function to apply `np.column_stack([prob[:, 1] for prob in y_prob_matrix])` to convert the RF's per-class probability lists into a single 2D array before appending to the GeoDataFrame.
+
+### Inference Output Schema
+
+Each output GeoJSON row contains:
+
+| Column | Description |
+|--------|-------------|
+| `h3_id` | H3 cell identifier |
+| `geometry` | Hexagon polygon |
+| ~68 feature columns | POI counts, road distances/densities, population, buildings, elevation |
+| `prob_Restaurant` | MLP/RF probability for Restaurant |
+| `prob_Hotel_Lodging` | MLP/RF probability for Hotel_Lodging |
+| `prob_Malls_Department` | MLP/RF probability for Malls_Department |
+| `prob_Cafe_Bakery` | MLP/RF probability for Cafe_Bakery |
+| `prob_Fashion_Clothing` | MLP/RF probability for Fashion_Clothing |
+| `prob_Convenience_Specialty` | MLP/RF probability for Convenience_Specialty |
+
+Total: ~79 columns per row.
+
+### Output Files
+
+| File | Model | Hexagons | Description |
+|------|-------|----------|-------------|
+| `Output/Plots/mlp_output.geojson` | MLP | 33,013 | Full inference grid with MLP probability predictions |
+| `Output/Plots/rf_prediction.geojson` | Random Forest | 33,013 | Full inference grid with RF probability predictions |
+
+## Data Engineering Notebook Changes
+
+The feature engineering notebook (`3_Data_engineering.ipynb`) has been consolidated
+so that all imports (`geopandas`, `pandas`, `numpy`, `h3`, `shapely`, `rasterio`)
+appear once at the top of the first code cell, rather than being scattered across
+individual cells. This eliminates redundant import statements and ensures the
+module namespace is available from the start.
+
+The notebook still follows the same pipeline stages:
+1. **H3 hexagon creation** — POI points binned into resolution-10 hexagons
+2. **Multi-scale POI counting** — buffer features at 500m, 1km, 2km
+3. **Road feature computation** — nearest-road distance and road density per hexagon
+4. **Population extraction** — zonal sums from WorldPop raster
+5. **Building footprint statistics** — spatial join and per-hexagon aggregation
+6. **DEM terrain features** — elevation and slope statistics from Copernicus DEM
+7. **Training dataset assembly** — final labeled GeoJSON for model training
+8. **Inference grid generation** — all hexagons in the bounding box (training + background)
 
 ## Reproducibility Notes
 
@@ -365,3 +557,11 @@ both training and background), and appends 6 probability columns. Output:
 - No `requirements.txt` exists — install dependencies manually.
 - `5_gridsearch.ipynb` is an empty placeholder. No grid search was implemented.
 - H3 v3/v4 compatibility shims are included throughout the codebase.
+- The training notebook saves separate `robust_scaler.pkl` files per dataset variant
+  (`MultiLabel_DATA/` and `MultiLabel_DATA_V2/`), so each training run has its own
+  matched scaler for inference.
+- The inference notebook validates feature count alignment between the scaler and the
+  input dataset before running predictions — a `ValueError` is raised on mismatch
+  to prevent silent incorrect predictions.
+- `random_state=42` is used consistently across train/test splits and model initialization
+  for deterministic results.
